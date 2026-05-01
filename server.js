@@ -72,24 +72,24 @@ app.get('/api/products', async (req, res) => {
   const { category, search, sort } = req.query;
   const key = 'p:' + (category||'all') + ':' + (search||'') + ':' + (sort||'') + ':' + (req.query.price_min||'') + ':' + (req.query.price_max||'');
   const cached = await redis.get(key); if (cached) return res.json(JSON.parse(cached));
-  let q = 'SELECT * FROM products WHERE inStock = 1'; const p = [];
+  let q = 'SELECT id, name, price, oldPrice, image, rating, reviews, category, tag, description, inStock FROM products WHERE inStock = 1'; const p = [];
   if (category && category !== 'all') { q += ' AND category = ?'; p.push(category); }
   if (search) { q += ' AND name LIKE ?'; p.push('%' + search + '%'); }
   if (req.query.price_min) { q += ' AND price >= ?'; p.push(parseInt(req.query.price_min)); }
   if (req.query.price_max) { q += ' AND price <= ?'; p.push(parseInt(req.query.price_max)); }
   if (sort === 'price_asc') q += ' ORDER BY price ASC'; else if (sort === 'price_desc') q += ' ORDER BY price DESC'; else if (sort === 'rating') q += ' ORDER BY rating DESC'; else q += ' ORDER BY reviews DESC';
   const r = db.exec(q, p);
-  const prods = r[0] ? r[0].values.map(v => ({ id:v[0], name:v[1], price:v[2], oldPrice:v[3], image:v[4], rating:v[5], reviews:v[6], category:v[7], tag: ({1:"Хит",2:"Новинка",3:"Акция",4:"Хит",6:"Новинка",8:"Акция",9:"Хит",11:"Новинка",13:"Акция",15:"Хит",16:"Новинка",18:"Акция",20:"Хит",21:"Новинка",23:"Акция"})[v[0]] || v[8] })) : [];
+  const prods = r[0] ? r[0].values.map(v => ({ id:v[0], name:v[1], price:v[2], oldPrice:v[3], image:v[4], rating:v[5], reviews:v[6], category:v[7], tag: ({1:"Хит",2:"Новинка",3:"Акция",4:"Хит",6:"Новинка",8:"Акция",9:"Хит",11:"Новинка",13:"Акция",15:"Хит",16:"Новинка",18:"Акция",20:"Хит",21:"Новинка",23:"Акция"})[v[0]] || v[8], description: v[9] || "" })) : [];
   await redis.setex(key, 300, JSON.stringify(prods)); res.json(prods);
 });
 
 app.get('/api/products/:id', (req, res) => {
-  const r = db.exec('SELECT id, name, price, oldPrice, image, rating, reviews, category, tag FROM products WHERE id = ?', [req.params.id]);
+  const r = db.exec('SELECT id, name, price, oldPrice, image, rating, reviews, category, tag, description FROM products WHERE id = ?', [req.params.id]);
   if (!r[0]?.values?.[0]) return res.status(404).json({ error: 'Не найден' });
   const v = r[0].values[0];
   const base = v[4].replace('/photos/', '').replace('.jpg', '');
   const photos = [v[4], '/photos/' + base + '_2.jpg', '/photos/' + base + '_3.jpg'];
-  res.json({ id: v[0], name: v[1], price: v[2], oldPrice: v[3], image: v[4], rating: v[5], reviews: v[6], category: v[7], tag: v[8], photos, description: 'Премиум качество. Оригинальный товар. Гарантия 1 год.', specs: { 'Бренд': 'Apple', 'Модель': '2024', 'Цвет': 'Черный', 'Вес': '200 г', 'Гарантия': '1 год' } });
+  res.json({ id: v[0], name: v[1], price: v[2], oldPrice: v[3], image: v[4], rating: v[5], reviews: v[6], category: v[7], tag: v[8], description: v[9] || "", photos, specs: { 'Бренд': 'Apple', 'Модель': '2024', 'Цвет': 'Черный', 'Вес': '200 г', 'Гарантия': '1 год' } });
 });
 
 app.get('/api/categories', async (req, res) => {
@@ -100,17 +100,18 @@ app.get('/api/categories', async (req, res) => {
 });
 
 // КОРЗИНА
-app.get('/api/cart', (req, res) => { const u = getUserId(req) || 0; const r = db.exec('SELECT ci.productId, ci.quantity, p.name, p.price, p.oldPrice, p.image FROM cart_items ci JOIN products p ON ci.productId = p.id WHERE ci.userId = ?', [u]); res.json(r[0] ? r[0].values.map(v => ({ productId:v[0], quantity:v[1], product:{ name:v[2], price:v[3], oldPrice:v[4], image:v[5] } })) : []); });
+app.get('/api/cart', (req, res) => { const u = getUserId(req) || 0; const r = db.exec('SELECT ci.productId, ci.quantity, p.name, p.price, p.oldPrice, p.image, p.description FROM cart_items ci JOIN products p ON ci.productId = p.id WHERE ci.userId = ?', [u]); res.json(r[0] ? r[0].values.map(v => ({ productId:v[0], quantity:v[1], product:{ name:v[2], price:v[3], oldPrice:v[4], image:v[5], description:v[6] } })) : []); });
 app.post('/api/cart', (req, res) => { const u = getUserId(req) || 0; const { productId, quantity = 1 } = req.body; const ex = db.exec('SELECT id, quantity FROM cart_items WHERE userId = ? AND productId = ?', [u, productId]); if (ex[0]?.values?.length) db.run('UPDATE cart_items SET quantity = ? WHERE id = ?', [ex[0].values[0][1] + quantity, ex[0].values[0][0]]); else db.run('INSERT INTO cart_items (userId, productId, quantity) VALUES (?, ?, ?)', [u, productId, quantity]); saveDb(); res.json({ success: true, count: db.exec('SELECT COUNT(*) FROM cart_items WHERE userId = ?', [u])[0].values[0][0] }); });
 app.delete('/api/cart/:pid', (req, res) => { const u = getUserId(req) || 0; db.run('DELETE FROM cart_items WHERE userId = ? AND productId = ?', [u, req.params.pid]); saveDb(); res.json({ success: true }); });
 app.patch('/api/cart/:pid', (req, res) => { const u = getUserId(req) || 0; db.run('UPDATE cart_items SET quantity = ? WHERE userId = ? AND productId = ?', [Math.max(1, req.body.quantity), u, req.params.pid]); saveDb(); res.json({ success: true }); });
 
 // ИЗБРАННОЕ
 app.get('/api/favorites', (req, res) => { const u = getUserId(req) || 0; const r = db.exec('SELECT productId FROM favorites WHERE userId = ?', [u]); res.json(r[0] ? r[0].values.map(v => v[0]) : []); });
-app.post('/api/favorites/:id', (req, res) => { const u = getUserId(req) || 0; const pid = parseInt(req.params.id); const ex = db.exec('SELECT id FROM favorites WHERE userId = ? AND productId = ?', [u, pid]); if (ex[0]?.values?.length) db.run('DELETE FROM favorites WHERE userId = ? AND productId = ?', [u, pid]); else db.run('INSERT INTO favorites (userId, productId) VALUES (?, ?)', [u, pid]); saveDb(); res.json({ favorites: db.exec('SELECT productId FROM favorites WHERE userId = ?', [u])[0]?.values.map(v => v[0]) || [] }); });
+app.post('/api/favorites/:id', (req, res) => { const u = getUserId(req) || 0; const pid = parseInt(req.params.id); const ex = db.exec('SELECT id FROM favorites WHERE userId = ? AND productId = ?', [u, pid]); if (ex[0]?.values?.length) { db.run('DELETE FROM favorites WHERE userId = ? AND productId = ?', [u, pid]); } else { db.run('INSERT INTO favorites (userId, productId) VALUES (?, ?)', [u, pid]); } saveDb(); redis.flushall(); res.json({ favorites: db.exec('SELECT productId FROM favorites WHERE userId = ?', [u])[0]?.values.map(v => v[0]) || [] }); });
 
 // ЗАКАЗЫ
 app.post('/api/checkout', (req, res) => { const u = getUserId(req) || 0; const r = db.exec('SELECT ci.productId, ci.quantity, p.price FROM cart_items ci JOIN products p ON ci.productId = p.id WHERE ci.userId = ?', [u]); if (!r[0]?.values?.length) return res.status(400).json({ error: 'Корзина пуста' }); const total = r[0].values.reduce((s, v) => s + v[2] * v[1], 0); db.run('INSERT INTO orders (userId, total, status, tracking, createdAt) VALUES (?, ?, ?, ?, ?)', [u, total, 'В обработке', '', new Date().toLocaleString('ru-RU')]); const orderId = db.exec('SELECT MAX(id) FROM orders')[0].values[0][0]; for (const v of r[0].values) db.run('INSERT INTO order_items (orderId, productId, quantity, price) VALUES (?, ?, ?, ?)', [orderId, v[0], v[1], v[2]]); db.run('UPDATE users SET bonus = bonus + ? WHERE id = ?', [Math.round(total * 0.05), u]); db.run('DELETE FROM cart_items WHERE userId = ?', [u]); saveDb(); res.json({ success: true, order: { id: orderId, total, status: 'В обработке' } }); });
+app.get('/api/orders/all', (req, res) => { const r = db.exec('SELECT * FROM orders ORDER BY id DESC'); res.json(r[0]?.values.map(v => ({ id:v[0], userId:v[1], total:v[2], status:v[3], tracking:v[4], date:v[5] })) || []); });
 app.get('/api/orders', (req, res) => { const u = getUserId(req) || 0; const r = db.exec('SELECT * FROM orders WHERE userId = ? ORDER BY id DESC', [u]); res.json(r[0]?.values.map(v => ({ id:v[0], total:v[2], status:v[3], tracking:v[4], date:v[5] })) || []); });
 app.get('/api/orders/:id', (req, res) => { const r = db.exec('SELECT * FROM orders WHERE id = ?', [req.params.id]); if (!r[0]?.values?.[0]) return res.status(404).json({ error: 'Не найден' }); const v = r[0].values[0]; res.json({ id: v[0], total: v[2], status: v[3], tracking: v[4], date: v[5] }); });
 app.patch('/api/orders/:id/status', (req, res) => { db.run('UPDATE orders SET status = ? WHERE id = ?', [req.body.status, req.params.id]); saveDb(); res.json({ success: true }); });
@@ -144,22 +145,22 @@ app.post('/api/products', (req, res) => {
   const { name, price, oldPrice, category, image, tag } = req.body;
   db.run('INSERT INTO products (name, price, oldPrice, category, image, tag) VALUES (?, ?, ?, ?, ?, ?)', [name, price, oldPrice || null, category, image || '/photos/placeholder.jpg', tag || '']);
   saveDb();
-  redis.del(redis.keys('p:*'));
-  res.json({ success: true });
+  redis.flushall();
+  const id = db.exec('SELECT MAX(id) FROM products')[0].values[0][0]; res.json({ success: true, id });
 });
 
 app.put('/api/products/:id', (req, res) => {
   const { name, price, oldPrice, category, tag } = req.body;
-  db.run('UPDATE products SET name=?, price=?, oldPrice=?, category=?, tag=? WHERE id=?', [name, price, oldPrice || null, category, tag || '', req.params.id]);
+  db.run('UPDATE products SET name=?, price=?, oldPrice=?, category=?, tag=?, description=?, image=? WHERE id=?', [name, price, oldPrice || null, category, tag || '', req.body.description || '', req.body.image || '/photos/placeholder.jpg', req.params.id]);
   saveDb();
-  redis.del(redis.keys('p:*'));
+  redis.flushall();
   res.json({ success: true });
 });
 
 app.delete('/api/products/:id', (req, res) => {
   db.run('DELETE FROM products WHERE id=?', [req.params.id]);
   saveDb();
-  redis.del(redis.keys('p:*'));
+  redis.flushall();
   res.json({ success: true });
 });
 
