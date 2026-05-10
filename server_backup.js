@@ -120,27 +120,7 @@ app.post('/api/checkout', (req, res) => { const u = getUserId(req) || 0; const r
 app.get('/api/orders/all', (req, res) => { const r = db.exec('SELECT * FROM orders ORDER BY id DESC'); res.json(r[0]?.values.map(v => ({ id:v[0], userId:v[1], total:v[2], status:v[3], tracking:v[4], date:v[5] })) || []); });
 app.get('/api/orders', (req, res) => { const u = getUserId(req) || 0; const r = db.exec('SELECT * FROM orders WHERE userId = ? ORDER BY id DESC', [u]); res.json(r[0]?.values.map(v => ({ id:v[0], total:v[2], status:v[3], tracking:v[4], date:v[5] })) || []); });
 app.get('/api/orders/:id', (req, res) => { const r = db.exec('SELECT * FROM orders WHERE id = ?', [req.params.id]); if (!r[0]?.values?.[0]) return res.status(404).json({ error: 'Не найден' }); const v = r[0].values[0]; res.json({ id: v[0], total: v[2], status: v[3], tracking: v[4], date: v[5] }); });
-app.patch('/api/orders/:id/status', (req, res) => {
-  const u = getUserId(req);
-  const role = db.exec('SELECT role FROM users WHERE id = ?', [u])[0]?.values[0][0];
-  
-  // Админ может менять любой заказ
-  if (role === 'admin') {
-    db.run('UPDATE orders SET status = ? WHERE id = ?', [req.body.status, req.params.id]);
-    saveDb();
-    return res.json({ success: true });
-  }
-  
-  // Продавец может менять только заказы где есть его товары
-  const isSellerOrder = db.exec('SELECT oi.id FROM order_items oi JOIN products p ON oi.productId = p.id WHERE oi.orderId = ? AND p.sellerId = ?', [req.params.id, u]);
-  if (isSellerOrder[0]?.values?.length) {
-    db.run('UPDATE orders SET status = ? WHERE id = ?', [req.body.status, req.params.id]);
-    saveDb();
-    return res.json({ success: true });
-  }
-  
-  res.status(403).json({ error: 'Нет доступа' });
-});
+app.patch('/api/orders/:id/status', (req, res) => { db.run('UPDATE orders SET status = ? WHERE id = ?', [req.body.status, req.params.id]); saveDb(); res.json({ success: true }); });
 
 // REVIEWS
 app.get('/api/reviews/:productId', (req, res) => { const r = db.exec('SELECT * FROM reviews WHERE productId = ? ORDER BY id DESC', [req.params.productId]); res.json(r[0]?.values.map(v => ({ id:v[0], rating:v[3], text:v[4], author:v[5] })) || []); });
@@ -185,7 +165,7 @@ app.put('/api/my-products/:id', (req, res) => {
 app.post('/api/become-seller', (req, res) => { const u = getUserId(req); db.run('UPDATE users SET role = "seller" WHERE id = ?', [u]); saveDb(); res.json({ success: true }); });
 app.get('/api/my-role', (req, res) => { const u = getUserId(req); const r = db.exec('SELECT role FROM users WHERE id = ?', [u]); res.json({ role: r[0]?.values[0][0] || 'user' }); });
 app.get('/api/pending-products', (req, res) => { const u = getUserId(req); const role = db.exec('SELECT role FROM users WHERE id = ?', [u])[0]?.values[0][0]; if (role !== 'admin') return res.status(403).json({ error: '!' }); const r = db.exec('SELECT p.*, u.name as sellerName FROM products p JOIN users u ON p.sellerId = u.id WHERE p.status = "pending" ORDER BY p.id DESC'); res.json(r[0]?.values.map(v => ({ id:v[0], name:v[1], price:v[2], image:v[4], status:v[10], sellerName:v[12] })) || []); });
-app.patch('/api/products/:id/moderate', (req, res) => { const u = getUserId(req); const role = db.exec('SELECT role FROM users WHERE id = ?', [u])[0]?.values[0][0]; if (role !== 'admin') return res.status(403).json({ error: '!' }); if (req.body.status === 'rejected') { db.run('DELETE FROM products WHERE id = ?', [req.params.id]); } else { db.run('UPDATE products SET status = ? WHERE id = ?', [req.body.status, req.params.id]); } saveDb(); redis.flushall(); res.json({ success: true }); });
+app.patch('/api/products/:id/moderate', (req, res) => { const u = getUserId(req); const role = db.exec('SELECT role FROM users WHERE id = ?', [u])[0]?.values[0][0]; if (role !== 'admin') return res.status(403).json({ error: '!' }); db.run('UPDATE products SET status = ? WHERE id = ?', [req.body.status, req.params.id]); saveDb(); redis.flushall(); res.json({ success: true }); });
 
 // SHOP NAME
 app.post('/api/shop-name', (req, res) => {
@@ -202,29 +182,5 @@ app.get('/api/pending-shops', (req, res) => { const u = getUserId(req); const ro
 
 // UPLOAD
 app.post('/api/upload', upload.single('photo'), (req, res) => { if (!req.file) return res.status(400).json({ error: 'Нет файла' }); const p = 'photos/' + req.file.filename + '.jpg'; require('fs').renameSync(req.file.path, p); res.json({ path: '/' + p }); });
-
-
-
-// Заказы продавца
-app.get('/api/seller-orders', (req, res) => {
-  const u = getUserId(req);
-  const r = db.exec("SELECT DISTINCT o.* FROM orders o JOIN order_items oi ON o.id = oi.orderId JOIN products p ON oi.productId = p.id WHERE p.sellerId = ? ORDER BY o.id DESC", [u]);
-  res.json(r[0]?.values.map(v => ({ id:v[0], userId:v[1], total:v[2], status:v[3], tracking:v[4], date:v[5] })) || []);
-});
-
-// Статистика продавца для админа
-app.get('/api/seller-stats-admin', (req, res) => {
-  const u = getUserId(req);
-  const role = db.exec('SELECT role FROM users WHERE id = ?', [u])[0]?.values[0][0];
-  if (role !== 'admin') return res.status(403).json({ error: '!' });
-  const sellers = db.exec('SELECT id, name, email, shopName FROM users WHERE role IN ("seller", "admin")');
-  const stats = (sellers[0]?.values || []).map(s => {
-    const products = db.exec('SELECT COUNT(*) FROM products WHERE sellerId = ?', [s[0]])[0].values[0][0];
-    const orders = db.exec('SELECT COUNT(DISTINCT o.id) FROM orders o JOIN order_items oi ON o.id = oi.orderId JOIN products p ON oi.productId = p.id WHERE p.sellerId = ?', [s[0]])[0].values[0][0];
-    const revenue = db.exec('SELECT COALESCE(SUM(o.total), 0) FROM orders o JOIN order_items oi ON o.id = oi.orderId JOIN products p ON oi.productId = p.id WHERE p.sellerId = ?', [s[0]])[0].values[0][0];
-    return { id: s[0], name: s[1], email: s[2], shopName: s[3] || 'Без названия', products, orders, revenue };
-  });
-  res.json(stats);
-});
 
 app.listen(PORT, '0.0.0.0');
